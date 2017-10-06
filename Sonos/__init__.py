@@ -163,130 +163,33 @@ eg.RegisterPlugin(
     )
 )
 
-'''
-methods
 
-play
-play_uri
-play_from_queue
-pause
-stop
-seek
-next
-previous
-switch_to_line_in
-switch_to_tv
-get_current_track_info
-get_speaker_info
-partymode
-join
-unjoin
-get_queue
-get_current_transport_info
-add_uri_to_queue
-add_to_queue
-remove_from_queue
-clear_queue
-get_favorite_radio_shows
-get_favorite_radio_stations
-get_sonos_favorites
-create_sonos_playlist
-create_sonos_playlist_from_queue
-remove_sonos_playlist
-add_item_to_sonos_playlist
-get_item_album_art_uri
-set_sleep_timer
-get_sleep_timer
-
-attributes
-
-uid
-household_id
-mute
-volume
-bass
-treble
-loudness
-cross_fade
-status_light
-player_name
-play_mode
-queue_size
-
-is_playing_tv
-is_playing_radio
-is_playing_line_in
-        
-'''
-
-import threading # NOQA
+import wx  # NOQA
+import wx_controls # NOQA
 from . import soco # NOQA
-from service_handler import ServiceHandler as _ServiceHandler # NOQA
-from device_handler import DeviceHandler as _DeviceHandler # NOQA
+from device_handler import DeviceHandler # NOQA
+from event_handler import EventHandler # NOQA
 from .soco.events import event_listener # NOQA
 from exception import PlayerNotFound # NOQA
+from utils import dialog_line as _dialog_line # NOQA
 
 
-ServiceHandler = _ServiceHandler
-DeviceHandler = DeviceHandler
+class Text(eg.TranslatableStrings):
+    class SetPlayerName:
+        name = 'Set Players Name'
+        description = 'Sets the user friendly name of the player.'
+        player_lbl = 'New Player Name:'
 
+    class SetSleepTimer:
+        name = 'Set Sleep Timer'
+        description = 'Sets the sleep timer for a player.'
+        hours_lbl = 'Hours:'
+        minutes_lbl = 'Minutes:'
+        seconds_lbl = 'Seconds:'
 
-class ThreadClass(object):
-    def __init__(self, plugin):
-        self._event = threading.Event()
-        self.plugin = plugin
-        self.TriggerEvent = plugin.TriggerEvent
-        self.thread = threading.Thread(name=__name__, target=self.run)
-        self.thread.start()
-
-    def run(self):
-        global DeviceHandler
-        global ServiceHandler
-
-        self._event.clear()
-        for device in soco.discover():
-            DeviceHandler += device
-            ServiceHandler += device
-
-        while not self._event.isSet():
-            old_devices = DeviceHandler.copy_devices()
-            new_devices = soco.discover()
-            for new_device in new_devices[:]:
-                for old_device in old_devices:
-                    if old_device.uid == new_device.uid:
-                        old_devices.remove(old_device)
-                        new_devices.remove(new_device)
-                        break
-
-            for old_device in old_devices:
-                self.TriggerEvent(
-                    'Player.Removed',
-                    payload=old_device.player_name
-                )
-
-                DeviceHandler -= old_device
-                ServiceHandler -= old_device
-
-            for new_device in new_devices:
-                self.TriggerEvent(
-                    'Player.Added',
-                    payload=new_device.player_name
-                )
-
-                DeviceHandler += new_device
-                ServiceHandler += new_device
-
-            self._event.wait(0.2)
-
-    def stop(self):
-        self._event.set()
-        self.thread.join(3)
-
-
-class Text:
-    # add variables with string that you want to be able to have translated
-    # using the language editor in here
-    pass
+    class GetSleepTimer:
+        name = 'Get Sleep Timer'
+        description = 'Returns the remaining sleep timer time on a player.'
 
 
 class SonosMedia(eg.PluginBase):
@@ -296,9 +199,12 @@ class SonosMedia(eg.PluginBase):
     def __init__(self):
         self._event_thread = None
         eg.PluginBase.__init__(self)
+        self.AddAction(SetPlayerName)
+        self.AddAction(SetSleepTimer)
+        self.AddAction(GetSleepTimer)
 
     def __start__(self):
-        self._event_thread = ThreadClass(self)
+        self._event_thread = EventHandler(self)
 
     def __close__(self):
         pass
@@ -308,3 +214,154 @@ class SonosMedia(eg.PluginBase):
 
     def Configure(self, *args):
         eg.PluginBase.Configure(self, *args)
+
+
+class GetSleepTimer(eg.ActionBase):
+
+    def __call__(self, device):
+        time_remaining = DeviceHandler[device].get_sleep_timer()
+        return 0 if time_remaining is None else time_remaining
+
+    def Configure(self, device=None):
+        panel = eg.ConfigPanel()
+        device_ctrl = wx_controls.DeviceCtrl(panel, device)
+
+        panel.sizer.Add(device_ctrl, 0, wx.EXPAND)
+
+        while panel.Affirmed():
+            panel.SetResult(device_ctrl.GetUID())
+
+
+class SetSleepTimer(eg.ActionBase):
+
+    def __call__(self, device, hours=0, minutes=0, seconds=0):
+        seconds += ((hours * 60) + minutes) * 60
+        DeviceHandler[device].set_sleep_timer(min([86399, seconds]))
+        return DeviceHandler[device].get_sleep_timer()
+
+    def Configure(self, device=None, hours=2, minutes=0, seconds=0):
+        text = self.text
+        panel = eg.ConfigPanel()
+
+        def create_controls(label, value):
+            st = wx.StaticText(label)
+            ctrl = panel.SpinIntCtrl(value=value, min=0, max=60)
+            panel.sizer.Add(_dialog_line(st, ctrl), 0, wx.EXPAND)
+            return st, ctrl
+
+        device_ctrl = wx_controls.DeviceCtrl(panel, device)
+        panel.sizer.Add(device_ctrl, 0, wx.EXPAND)
+
+        hours_st, hours_ctrl = create_controls(text.hours_lbl, hours)
+        minutes_st, minutes_ctrl = create_controls(text.minutes_lbl, minutes)
+        seconds_st, seconds_ctrl = create_controls(text.seconds_lbl, seconds)
+
+        hours_ctrl.numCtrl.SetMax(24)
+        eg.EqualizeWidths((device_ctrl.st, hours_st, minutes_st, seconds_st))
+
+        while panel.Affirmed():
+            panel.SetResult(
+                device_ctrl.GetUID(),
+                hours_ctrl.GetValue(),
+                minutes_ctrl.GetValue(),
+                seconds_ctrl.GetValue()
+            )
+
+
+class SetPlayerName(eg.ActionBase):
+
+    def __call__(self, device, player_name):
+        DeviceHandler[device].player_name = player_name
+
+    def Configure(self, device=None, player_name=''):
+        text = self.text
+        panel = eg.ConfigPanel()
+
+        name_st = panel.StaticText(text.player_lbl)
+        device_ctrl = wx_controls.DeviceCtrl(panel, device)
+        name_ctrl = panel.TextCtrl(player_name)
+
+        eg.EqualizeWidths((device_ctrl.st, name_st))
+        eg.EqualizeWidths((device_ctrl.ctrl, name_ctrl))
+
+        name_sizer = _dialog_line(name_st, name_ctrl, proportion=1)
+
+        panel.sizer.Add(device_ctrl, 0, wx.EXPAND)
+        panel.sizer.Add(name_sizer, 0, wx.EXPAND)
+
+        while panel.Affirmed():
+            panel.SetResult(
+                device_ctrl.GetUID(),
+                name_ctrl.GetValue()
+            )
+
+
+class ZoneGroup(eg.ActionBase):
+
+    def __call__(self, group_label, action):
+        pass
+
+    def Configure(self, group_label=None, actions=()):
+        text = self.text
+        panel = eg.ConfigPanel()
+
+        groups = {}
+
+        for dev in DeviceHandler:
+            if dev.is_coordinator:
+                groups[dev.group.label] = dev.group
+
+
+# class NowPlaying(eg.ActionBase):
+#     get_current_track_info
+#
+# class Play(eg.ActionBase):
+#
+# class PlayURI(eg.ActionBase):
+#
+# class Queue(eg.ActionBase):
+#     get_queue
+#     create_sonos_playlist_from_queue
+#     get_item_album_art_uri
+#     PlayFromQueue
+#
+#
+#
+# class Pause(eg.ActionBase):
+# class Stop(eg.ActionBase):
+# class Seek(eg.ActionBase):
+# class Next(eg.ActionBase):
+# class Previous(eg.ActionBase):
+# class Input(eg.ActionBase):
+#     # switch_to_line_in
+#     # switch_to_tv
+#
+#
+# class Audio(eg.ActionBase):
+#     get_speaker_info
+#
+# class PartyMode(eg.ActionBase):
+# class join(eg.ActionBase):
+# class unjoin(eg.ActionBase):
+#
+# class get_current_transport_info(eg.ActionBase):
+#
+# class Queue(eg.ActionBase):
+#     play_from_queue
+#     add_uri_to_queue
+#     remove_from_queue
+#     clear_queue
+#     add_to_queue
+#
+# class Favorites(eg.ActionBase):
+#     get_favorite_radio_shows
+#     get_favorite_radio_stations
+#     get_sonos_favorites
+#
+# class Playlist(eg.ActionBase):
+#     create_sonos_playlist
+#     create_sonos_playlist_from_queue
+#     remove_sonos_playlist
+#     add_item_to_sonos_playlist
+#
+#     get_item_album_art_uri
