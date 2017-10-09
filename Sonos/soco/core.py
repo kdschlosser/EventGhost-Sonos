@@ -12,8 +12,6 @@ import re
 import socket
 from functools import wraps
 import warnings
-from soco.exceptions import SoCoUPnPException
-
 
 import requests
 
